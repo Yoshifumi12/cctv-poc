@@ -1,0 +1,307 @@
+generator client {
+    provider                    = "prisma-client-py"
+    interface                   = "asyncio"
+    enable_experimental_decimal = true
+    recursive_type_depth        = -1
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+model User {
+    id                    String                @id @default(uuid())
+    firstName             String
+    lastName              String
+    email                 String                @unique
+    password              String?
+    role                  Role                  @default(USER)
+    googleId              String?
+    photo                 String?
+    createdAt             DateTime              @default(now())
+    updatedAt             DateTime              @updatedAt
+    properties            Property[]
+    resetToken            ResetToken[]
+    userAudits            UserAudit[]
+    statusHistories       DeviceStatusHistory[]
+    subscriptions         Subscription[]
+    archivedAt            DateTime?
+    userManagedProperties UserManagedProperty[]
+}
+
+enum Role {
+    USER
+    ADMIN
+    MANAGER
+}
+
+enum Subscription {
+    ARMS
+    EM
+    BMS
+    FDAS
+}
+
+model Property {
+    id                    String                @id @default(uuid())
+    name                  String
+    location              String
+    user                  User                  @relation(fields: [userId], references: [id])
+    userId                String
+    type                  PropertyType          @default(RBG)
+    subType               PropertySubType?
+    latitude              Decimal?              @db.Decimal(9, 6)
+    longitude             Decimal?              @db.Decimal(9, 6)
+    createdAt             DateTime              @default(now())
+    updatedAt             DateTime              @updatedAt
+    archivedAt            DateTime?
+    devices               Device[]
+    FDASDevices           FDASDevice[]
+    approvalStatus        ApprovalStatus        @default(PENDING)
+    userManagedProperties UserManagedProperty[]
+    propertyContract      PropertyContract?
+    contactPerson         String?
+    contactNumber         String?
+    modules               Module[]
+    floors                Floor[]
+}
+
+model PropertyContract {
+    id         Int       @id @default(autoincrement())
+    propertyId String    @unique
+    property   Property  @relation(fields: [propertyId], references: [id])
+    startDate  DateTime?
+    endDate    DateTime?
+}
+
+enum ApprovalStatus {
+    APPROVED
+    PENDING
+    DECLINED
+}
+
+enum PropertyType {
+    RBG
+    MOG
+    EMG
+    VMG
+}
+
+enum PropertySubType {
+    ALP
+    ALVEO
+    AVIDA
+    AMAIA
+    ALO
+    AREIT
+    ICO
+    FBDC
+    ESTATE
+    CARPARK
+    OFFICE
+    RESIDENTIAL
+}
+
+model ResetToken {
+    id          Int    @id @default(autoincrement())
+    token       String @unique
+    tokenExpiry Int
+    user        User   @relation(fields: [userId], references: [id])
+    userId      String
+}
+
+model Device {
+    id                      String                  @id @default(uuid())
+    name                    String
+    property                Property                @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+    propertyId              String
+    ipAddress               String                  @unique
+    createdAt               DateTime                @default(now())
+    updatedAt               DateTime                @updatedAt
+    location                DeviceLocation?
+    remarks                 String?
+    statusHistories         DeviceStatusHistory[]
+    username                String?
+    password                String?
+    brand                   DeviceBrand             @default(HIKVISION)
+    underMaintenanceStatus  UnderMaintenanceStatus?
+    smartSheetRowId         String?
+    smartSheetTrackingRowId String?
+}
+
+model FDASDevice {
+    id                              String                            @id @default(uuid())
+    name                            String
+    property                        Property                          @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+    propertyId                      String
+    serialNumber                    String
+    createdAt                       DateTime                          @default(now())
+    updatedAt                       DateTime                          @updatedAt
+    remarks                         String?
+    statusHistories                 FDASDeviceStatusHistory[]
+    underMaintenanceStatus          UnderMaintenanceStatus?
+    firePumpEnabled                 Int[]
+    FDASDeviceFirePumpStatusHistory FDASDeviceFirePumpStatusHistory[]
+}
+
+enum DeviceLocation {
+    LOBBY
+    PERIMETER
+}
+
+enum DeviceBrand {
+    ACTI
+    AXIS
+    BOSCH
+    DAHUA
+    GKB
+    GMG
+    HIKVISION
+    MARCH
+    PANASONIC
+    PLANET
+    SONY
+    SAMSUNG
+    THREES
+    TRUVISION
+    TAPO
+    WYZE
+}
+
+enum UnderMaintenanceStatus {
+    UNDER_REPAIR
+    NEEDED_ACTION
+}
+
+model DeviceStatusHistory {
+    id        Int          @id @default(autoincrement())
+    device    Device       @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+    deviceId  String
+    status    DeviceStatus
+    user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+    userId    String
+    remarks   String?
+    createdAt DateTime     @default(now())
+
+    @@index([createdAt, deviceId], name: "createdAt_deviceId_index")
+}
+
+model FDASDeviceStatusHistory {
+    id           Int              @id @default(autoincrement())
+    FDASDevice   FDASDevice       @relation(fields: [FDASDeviceId], references: [id], onDelete: Cascade)
+    FDASDeviceId String
+    status       FDASDeviceStatus
+    remarks      String?
+    createdAt    DateTime         @default(now())
+    checked      Boolean          @default(false)
+
+    @@index([createdAt, FDASDeviceId], name: "createdAt_FDASDeviceId_index")
+}
+
+model FDASDeviceFirePumpStatusHistory {
+    id             Int              @id @default(autoincrement())
+    FDASDevice     FDASDevice       @relation(fields: [FDASDeviceId], references: [id], onDelete: Cascade)
+    FDASDeviceId   String
+    status         FDASDeviceStatus
+    createdAt      DateTime         @default(now())
+    firePumpNumber Int
+
+    @@index([createdAt, FDASDeviceId, firePumpNumber], name: "createdAt_FDASDeviceFirePumpId_index")
+}
+
+enum DeviceStatus {
+    ONLINE
+    OFFLINE
+    UNDER_REPAIR
+    NEEDED_ACTION
+}
+
+enum FDASDeviceStatus {
+    ONLINE
+    OFFLINE
+    UNDER_REPAIR
+    NEEDED_ACTION
+    FAULT
+}
+
+model UserAudit {
+    id         Int      @id @default(autoincrement())
+    action     String
+    email      String
+    actionBy   User     @relation(fields: [actionById], references: [id])
+    actionById String
+    createdAt  DateTime @default(now())
+}
+
+model UserManagedProperty {
+    id         Int      @id @default(autoincrement())
+    user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+    userId     String
+    property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+    propertyId String
+
+    @@unique([userId, propertyId])
+}
+
+model Floor {
+    id         Int      @id @default(autoincrement())
+    property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+    propertyId String
+    name       String
+    imageUrl   String?
+    rooms      Room[]
+}
+
+model Room {
+    id      Int          @id @default(autoincrement())
+    floor   Floor        @relation(fields: [floorId], references: [id], onDelete: Cascade)
+    floorId Int
+    name    String
+    devices RoomDevice[]
+}
+
+model RoomDevice {
+    id          String               @id @default(uuid())
+    entityId    String               @default("")
+    name        String
+    room        Room                 @relation(fields: [roomId], references: [id], onDelete: Cascade)
+    roomId      Int
+    type        RoomDeviceType
+    isOn        Boolean              @default(false)
+    isOffline   Boolean              @default(false)
+    hasSchedule Boolean              @default(false)
+    startTime   DateTime?
+    endTime     DateTime?
+    configs     Json?
+    haConfigs   Json?
+    createdAt   DateTime             @default(now())
+    state       String               @default("")
+    activeDays  String[] // Array of days
+    schedules   RoomDeviceSchedule[]
+}
+
+model RoomDeviceSchedule {
+    id           Int        @id @default(autoincrement())
+    time         DateTime
+    enable       Boolean    @default(false)
+    activeDays   String[] // Array of days
+    roomDevice   RoomDevice @relation(fields: [roomDeviceId], references: [id], onDelete: Cascade)
+    roomDeviceId String
+    switchState  Boolean    @default(false)
+    createdAt    DateTime   @default(now())
+
+    @@index([id, roomDeviceId], name: "roomDeviceSchedule_index")
+}
+
+enum RoomDeviceType {
+    AC
+    LIGHT
+    SWITCH
+}
+
+enum Module {
+    ARMS
+    BMS
+    FDAS
+}

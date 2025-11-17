@@ -7,8 +7,8 @@
 2. Install Dependencies
 - pip install -r requirements.txt
 
-3. Generate Fake Data
-- python data_generator.py
+3. Generate DB
+- python -m prisma generate
 
 4. Train the Model
 - python train.py

@@ -2,3 +2,4 @@ __pycache__
 .venv
 models
 fake_data.csv
+node_modules
