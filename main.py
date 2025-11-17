@@ -61,4 +61,4 @@ async def get_at_risk_devices(threshold: float = 0.7):
 
 @app.get("/")
 async def root():
-    return {"message": "CCTV Failure Prediction POC - /api/v1/devices/at-risk"}
+    return {"message": "CCTV Failure Prediction POC - /api/devices/at-risk"}
