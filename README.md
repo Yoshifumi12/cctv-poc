@@ -17,4 +17,4 @@
 - uvicorn main:app --reload
 
 6. Test the API
-- [](http://127.0.0.1:8000/docs)
+- [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
