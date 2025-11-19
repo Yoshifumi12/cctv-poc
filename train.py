@@ -7,6 +7,7 @@ import asyncio
 from datetime import datetime, timedelta
 import asyncpg
 import os
+import numpy as np
 
 FEATURE_COLS = [
     "uptime_24h_pct",
@@ -14,7 +15,17 @@ FEATURE_COLS = [
     "total_downtime_24h_min",
     "total_downtime_7d_min",
     "downtime_events_24h",
-    "avg_downtime_duration_min"
+    "downtime_events_7d",
+    "avg_downtime_duration_24h_min",
+    "avg_downtime_duration_7d_min",
+    "flapping_events_24h",
+    "flapping_intensity_24h",       
+    "avg_flap_duration_min",
+    "stability_score_24h",
+    "stability_score_7d",
+    "flapping_events_7d",           
+    "flapping_intensity_7d",        
+    "avg_flap_duration_7d_min",     
 ]
 
 async def fetch_all_status_histories():
@@ -42,6 +53,7 @@ async def fetch_all_status_histories():
         JOIN "Device" d ON dsh."deviceId" = d.id
         JOIN "Property" p ON d."propertyId" = p.id
         ORDER BY dsh."createdAt" ASC
+        LIMIT 500000
         """
         
         rows = await conn.fetch(query)
@@ -82,22 +94,149 @@ def build_downtime_segments(histories):
                 "duration_min": duration
             })
 
-    return pd.DataFrame(segments)
+    flapping_events = detect_flapping_events(histories)
+    
+    return pd.DataFrame(segments), flapping_events
 
-def label_failure_in_next_24h(row, segments_df):
-    device_segs = segments_df[segments_df["device_id"] == row["device_id"]]
+def detect_flapping_events(histories, flapping_threshold_min=10):
+    if len(histories) < 2:
+        return []
+
+    flapping_events = []
+    histories_sorted = sorted(histories, key=lambda x: x['createdAt'])
+
+    for i in range(1, len(histories_sorted)):
+        prev = histories_sorted[i-1]
+        curr = histories_sorted[i]
+        time_diff_min = (curr['createdAt'] - prev['createdAt']).total_seconds() / 60.0
+
+        if prev['status'] != curr['status'] and time_diff_min <= flapping_threshold_min:
+            flapping_events.append({
+                'device_id': curr['deviceId'],
+                'timestamp': curr['createdAt'],
+                'time_since_last_change_min': time_diff_min,
+                'is_flap': True
+            })
+
+    return flapping_events
+
+def calculate_flapping_metrics_7d(device_histories, snapshot_time):
+    lookback_start = snapshot_time - timedelta(days=7)
+    recent_histories = [h for h in device_histories if lookback_start <= h['createdAt'] <= snapshot_time]
+
+    if len(recent_histories) < 2:
+        return {
+            "flapping_events_7d": 0,
+            "flapping_intensity_7d": 0.0,
+            "avg_flap_duration_7d_min": 0.0,
+            "stability_score_7d": 100.0
+        }
+
+    flapping_events = detect_flapping_events(recent_histories, flapping_threshold_min=1.0)
+    flapping_count = len(flapping_events)
+    flapping_intensity = flapping_count / (7 * 24)  
+
+    change_intervals = []
+    for i in range(1, len(recent_histories)):
+        if recent_histories[i]['status'] != recent_histories[i-1]['status']:
+            dt = (recent_histories[i]['createdAt'] - recent_histories[i-1]['createdAt']).total_seconds() / 60.0
+            change_intervals.append(dt)
+
+    avg_flap_duration = np.mean(change_intervals) if change_intervals else 999
+
+    stability_score = 100.0
+
+    if flapping_count > 0:
+        stability_score *= max(0.01, 1 - (flapping_intensity / 5.0))
+
+    if avg_flap_duration < 60:  
+        stability_score *= max(0.05, avg_flap_duration / 60.0)
+
+    if flapping_intensity > 2.0:
+        stability_score *= 0.5  
+
+    stability_score = max(0.0, min(100.0, stability_score))
+
+    return {
+        "flapping_events_7d": flapping_count,
+        "flapping_intensity_7d": round(flapping_intensity, 3),
+        "avg_flap_duration_7d_min": round(avg_flap_duration, 2),
+        "stability_score_7d": round(stability_score, 2)
+    }
+    
+def calculate_flapping_metrics(device_histories, snapshot_time, lookback_hours=24):
+    lookback_start = snapshot_time - timedelta(hours=lookback_hours)
+    recent_histories = [h for h in device_histories if lookback_start <= h['createdAt'] <= snapshot_time]
+
+    if len(recent_histories) < 2:
+        return {
+            "flapping_events_24h": 0,
+            "flapping_intensity_24h": 0.0,
+            "avg_flap_duration_min": 0.0,
+            "stability_score_24h": 100.0
+        }
+
+    flapping_events = detect_flapping_events(recent_histories, flapping_threshold_min=1.0)
+    flapping_count = len(flapping_events)
+    flapping_intensity = flapping_count / lookback_hours
+
+    change_intervals = []
+    for i in range(1, len(recent_histories)):
+        if recent_histories[i]['status'] != recent_histories[i-1]['status']:
+            dt = (recent_histories[i]['createdAt'] - recent_histories[i-1]['createdAt']).total_seconds() / 60.0
+            change_intervals.append(dt)
+
+    avg_flap_duration = np.mean(change_intervals) if change_intervals else 999
+
+    stability_score = 100.0
+    if flapping_count > 0:
+        stability_score *= max(0.01, 1 - (flapping_intensity / 10)) 
+    if avg_flap_duration < 30:
+        stability_score *= max(0.1, avg_flap_duration / 30)
+
+    return {
+        "flapping_events_24h": flapping_count,
+        "flapping_intensity_24h": round(flapping_intensity, 3),
+        "avg_flap_duration_min": round(avg_flap_duration, 2),
+        "stability_score_24h": round(max(0, min(100, stability_score)), 2)
+    }
+    
+def label_failure_in_next_24h(row, segments_df, histories_dict):
+    device_id = row["device_id"]
+    ts = row["timestamp"]
+    future_end = ts + timedelta(hours=24)
+
+    device_segs = segments_df[segments_df["device_id"] == device_id]
     future_segs = device_segs[
-        (device_segs["start"] >= row["timestamp"]) &
-        (device_segs["start"] <= row["timestamp"] + timedelta(hours=24))
+        (device_segs["start"] >= ts) & 
+        (device_segs["start"] <= future_end)
     ]
-    return 1 if len(future_segs[future_segs["duration_min"] > 30]) > 0 else 0
+
+    total_downtime_next_24h = future_segs["duration_min"].sum()
+    num_downtime_events = len(future_segs)
+    has_long_outage = (future_segs["duration_min"] > 30).any()
+    avg_downtime_duration = future_segs["duration_min"].mean() if len(future_segs) > 0 else 0
+
+    device_histories = histories_dict.get(device_id, [])
+    future_histories = [h for h in device_histories if ts <= h['createdAt'] <= future_end]
+    flapping_events = detect_flapping_events(future_histories, flapping_threshold_min=5.0)  # looser
+    num_flaps = len(flapping_events)
+
+    is_failure = (
+        has_long_outage or
+        total_downtime_next_24h > 90 or                      
+        (num_downtime_events >= 5 and total_downtime_next_24h > 60) or
+        num_flaps >= 15 or                                  
+        (num_flaps >= 8 and avg_downtime_duration < 10)     
+    )
+
+    return 1 if is_failure else 0
 
 async def generate_training_dataset():
     print("Fetching status history from DB...")
     histories = await fetch_all_status_histories()
     if not histories:
         raise ValueError("No status history found in DB")
-
     print(f"Loaded {len(histories)} status records")
 
     history_dicts = []
@@ -117,81 +256,51 @@ async def generate_training_dataset():
     device_groups = {}
     for h in history_dicts:
         did = h['deviceId']
-        if did not in device_groups:
-            device_groups[did] = []
-        device_groups[did].append(h)
+        device_groups.setdefault(did, []).append(h)
 
-    rows = []
-    print("Building downtime segments...")
+    print("Building downtime segments and flapping events...")
     all_segments = []
+    device_histories_full = {did: sorted(hlist, key=lambda x: x['createdAt']) for did, hlist in device_groups.items()}
 
     for did, hlist in device_groups.items():
-        hlist = sorted(hlist, key=lambda x: x['createdAt'])
-        segments = []
-        offline_start = None
-        for i, h in enumerate(hlist):
-            if h['status'] == "OFFLINE" and offline_start is None:
-                offline_start = h['createdAt']
-            elif h['status'] == "ONLINE" and offline_start is not None:
-                duration = (h['createdAt'] - offline_start).total_seconds() / 60.0
-                if duration > 0:
-                    segments.append({
-                        "device_id": did,
-                        "start": offline_start,
-                        "end": h['createdAt'],
-                        "duration_min": duration
-                    })
-                offline_start = None
-
-            if h['createdAt'].hour % 6 == 0 and h['createdAt'].minute < 5:
-                rows.append({
-                    "device_id": did,
-                    "timestamp": h['createdAt'],
-                    "status": h['status']
-                })
-
-        if offline_start is not None:
-            now = datetime.utcnow()
-            duration = (now - offline_start).total_seconds() / 60.0
-            if duration > 0:
-                segments.append({
-                    "device_id": did,
-                    "start": offline_start,
-                    "end": now,
-                    "duration_min": duration
-                })
-
-        all_segments.extend(segments)
+        hlist_sorted = sorted(hlist, key=lambda x: x['createdAt'])
+        segments_df, _ = build_downtime_segments(hlist_sorted)
+        if not segments_df.empty:
+            segments = segments_df.to_dict('records')
+            for seg in segments:
+                seg['device_id'] = did
+            all_segments.extend(segments)
 
     segments_df = pd.DataFrame(all_segments)
-    snapshot_df = pd.DataFrame(rows)
+    if segments_df.empty:
+        print("No downtime segments found. Creating empty dataframe.")
+        segments_df = pd.DataFrame(columns=["device_id", "start", "end", "duration_min"])
 
-    if snapshot_df.empty:
-        print("No snapshots generated, creating manual snapshots...")
-        for did, hlist in device_groups.items():
-            if hlist:
-                first_date = min(h['createdAt'] for h in hlist)
-                last_date = max(h['createdAt'] for h in hlist)
-                current = first_date
-                while current <= last_date:
-                    if current.hour % 6 == 0:
-                        rows.append({
-                            "device_id": did,
-                            "timestamp": current,
-                            "status": "ONLINE" 
-                        })
-                    current += timedelta(hours=1)
-        
-        snapshot_df = pd.DataFrame(rows)
+    print(f"Generated {len(segments_df)} downtime segments")
 
+    snapshot_rows = []
+    for did, hlist in device_histories_full.items():
+        ts_list = [h['createdAt'] for h in hlist]
+        if not ts_list:
+            continue
+        min_ts = min(ts_list)
+        max_ts = max(ts_list)
+        current = min_ts.replace(minute=0, second=0, microsecond=0)
+        while current <= max_ts:
+            if current.hour % 6 == 0:
+                snapshot_rows.append({
+                    "device_id": did,
+                    "timestamp": current
+                })
+            current += timedelta(hours=1)
+
+    snapshot_df = pd.DataFrame(snapshot_rows)
     if snapshot_df.empty:
         raise ValueError("No snapshot timestamps generated")
 
-    print(f"Generated {len(snapshot_df)} snapshots, {len(segments_df)} downtime events")
+    print(f"Generated {len(snapshot_df)} snapshot points")
 
-    print("Computing rolling uptime stats...")
     feature_rows = []
-
     for _, snap in snapshot_df.iterrows():
         did = snap["device_id"]
         ts = snap["timestamp"]
@@ -200,16 +309,24 @@ async def generate_training_dataset():
         week_ago = ts - timedelta(days=7)
 
         dev_segs = segments_df[segments_df["device_id"] == did]
-        past_24h = dev_segs[(dev_segs["end"] >= day_ago) & (dev_segs["start"] <= ts)]
-        past_7d = dev_segs[(dev_segs["end"] >= week_ago) & (dev_segs["start"] <= ts)]
+        past_24h = dev_segs[
+            (dev_segs["end"] >= day_ago) & (dev_segs["start"] <= ts)
+        ]
+        past_7d = dev_segs[
+            (dev_segs["end"] >= week_ago) & (dev_segs["start"] <= ts)
+        ]
 
-        downtime_24h = past_24h["duration_min"].sum()
-        downtime_7d = past_7d["duration_min"].sum()
+        downtime_24h = past_24h["duration_min"].sum() if not past_24h.empty else 0.0
+        downtime_7d = past_7d["duration_min"].sum() if not past_7d.empty else 0.0
         events_24h = len(past_24h)
 
         uptime_24h = max(0, min(100, (1440 - downtime_24h) / 1440 * 100))
         uptime_7d = max(0, min(100, (10080 - downtime_7d) / 10080 * 100))
         avg_downtime = downtime_24h / max(events_24h, 1) if events_24h > 0 else 0
+
+        device_histories = device_histories_full.get(did, [])
+        flapping_24h = calculate_flapping_metrics(device_histories, ts, lookback_hours=24)
+        flapping_7d = calculate_flapping_metrics_7d(device_histories, ts)
 
         feature_rows.append({
             "device_id": did,
@@ -219,23 +336,42 @@ async def generate_training_dataset():
             "total_downtime_24h_min": round(downtime_24h, 2),
             "total_downtime_7d_min": round(downtime_7d, 2),
             "downtime_events_24h": events_24h,
-            "avg_downtime_duration_min": round(avg_downtime, 2),
+            "downtime_events_7d": len(past_7d),
+            "avg_downtime_duration_24h_min": round(avg_downtime, 2), 
+            "avg_downtime_duration_7d_min": round(downtime_7d / max(len(past_7d), 1), 2), 
+            **flapping_24h,
+            **flapping_7d,
         })
 
     feature_df = pd.DataFrame(feature_rows)
-    print(f"Feature matrix: {len(feature_df)} rows")
+    print(f"Feature matrix built: {len(feature_df)} rows")
 
-    if not feature_df.empty:
-        print("Labeling failures...")
-        feature_df["failure_in_next_24h"] = feature_df.apply(
-            lambda row: label_failure_in_next_24h(row, segments_df), axis=1
-        )
+    print("Labeling failures...")
+    def will_fail_in_next_24h(row):
+        did = row["device_id"]
+        ts = row["timestamp"]
+        future_start = ts
+        future_end = ts + timedelta(hours=24)
 
-        pos = feature_df["failure_in_next_24h"].sum()
-        print(f"Positive failures (label=1): {pos} / {len(feature_df)} ({pos/len(feature_df)*100:.2f}%)")
+        dev_segs = segments_df[segments_df["device_id"] == did]
+        future_segs = dev_segs[
+            (dev_segs["start"] >= future_start) &
+            (dev_segs["start"] <= future_end)
+        ]
+        long_outages = future_segs[future_segs["duration_min"] > 30]
+        return 1 if len(long_outages) > 0 else 0
+
+    feature_df["failure_in_next_24h"] = feature_df.apply(will_fail_in_next_24h, axis=1)
+
+    pos = feature_df["failure_in_next_24h"].sum()
+    print(f"Positive failures (label=1): {pos} / {len(feature_df)} ({pos/len(feature_df)*100:.2f}%)")
+
+    if pos == 0:
+        print("WARNING: No positive samples! Model will be dummy.")
     else:
-        print("No features generated, creating empty dataframe with failure column")
-        feature_df["failure_in_next_24h"] = 0
+        failed = feature_df[feature_df["failure_in_next_24h"] == 1]
+        print(f"Avg flapping events (failed): {failed['flapping_events_24h'].mean():.1f}")
+        print(f"Avg flapping events (all): {feature_df['flapping_events_24h'].mean():.1f}")
 
     return feature_df
 
@@ -269,7 +405,8 @@ def train_and_save_model(df):
                 "bagging_fraction": 0.8,
                 "bagging_freq": 5,
                 "verbose": -1,
-                "seed": 42
+                "seed": 42,
+                "scale_pos_weight": (len(y) - y.sum()) / y.sum() if y.sum() > 0 else 10,
             }
 
             model = lgb.train(
@@ -288,8 +425,8 @@ def train_and_save_model(df):
     joblib.dump({
         "model": model,
         "features": FEATURE_COLS
-    }, "models/lgbm_failure_model.pkl")
-    print("New model saved: models/lgbm_failure_model.pkl")
+    }, "models/lgbm_failure_model_with_flapping_500k.pkl")
+    print("New model saved: models/lgbm_failure_model_with_flapping.pkl")
 
 if __name__ == "__main__":
     print("Starting real-data training...")

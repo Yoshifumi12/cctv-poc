@@ -128,6 +128,8 @@ model Device {
     underMaintenanceStatus  UnderMaintenanceStatus?
     smartSheetRowId         String?
     smartSheetTrackingRowId String?
+
+    devicePredictions DevicePrediction[]
 }
 
 model FDASDevice {
@@ -292,6 +294,37 @@ model RoomDeviceSchedule {
     createdAt    DateTime   @default(now())
 
     @@index([id, roomDeviceId], name: "roomDeviceSchedule_index")
+}
+
+model DevicePrediction {
+    id                        String   @id @default(uuid())
+    deviceId                  String   @unique
+    device                    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+    failureProbability        Float
+    reliabilityScore          Float
+    riskLevel                 String
+    uptime24h                 Float
+    uptime7d                  Float
+    flappingEvents24h         Int
+    flappingEvents7d          Int
+    stabilityScore24h         Float
+    stabilityScore7d          Float
+    totalDowntime24hMin       Float
+    totalDowntime7dMin        Float
+    downtimeEvents24h         Int
+    downtimeEvents7d          Int
+    avgDowntimeDuration24hMin Float
+    avgDowntimeDuration7dMin  Float
+    flappingIntensity24h      Float
+    flappingIntensity7d       Float
+    avgFlapDurationMin        Float
+    avgFlapDuration7dMin     Float
+    createdAt                 DateTime @default(now())
+    updatedAt                 DateTime @updatedAt
+
+    @@index([riskLevel])
+    @@index([failureProbability])
+    @@index([createdAt])
 }
 
 enum RoomDeviceType {

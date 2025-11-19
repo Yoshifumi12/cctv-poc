@@ -1,7 +1,7 @@
 import joblib
 import pandas as pd
 
-MODEL_PATH = "models/lgbm_failure_model.pkl"
+MODEL_PATH = "models/lgbm_failure_model_with_flapping_500k.pkl"
 _model_data = joblib.load(MODEL_PATH)
 model = _model_data["model"]
 features = _model_data["features"]
