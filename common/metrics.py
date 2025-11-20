@@ -48,12 +48,15 @@ def build_downtime_segments(histories: List[Dict]) -> List[Dict]:
 def calculate_flapping_metrics(histories: List[Dict], snapshot_time: datetime, lookback_hours: int) -> Dict[str, Any]:
     start = snapshot_time - timedelta(hours=lookback_hours)
     recent = [h for h in histories if start <= h['createdAt'] <= snapshot_time]
+    
+    is_24h = lookback_hours <= 48
+        
     if len(recent) < 2:
         return {
-            f"flapping_events_{lookback_hours}h": 0,
-            f"flapping_intensity_{lookback_hours}h": 0.0,
-            f"avg_flap_duration_min": 0.0,
-            f"stability_score_{lookback_hours}h": 100.0
+            "flapping_events_24h" if is_24h else "flapping_events_7d": 0,
+            "flapping_intensity_24h" if is_24h else "flapping_intensity_7d": 0.0,
+            "avg_flap_duration_min" if is_24h else "avg_flap_duration_7d_min": 0.0,
+            "stability_score_24h" if is_24h else "stability_score_7d": 100.0,
         }
 
     flapping = detect_flapping_events(recent, threshold_min=1.0)
@@ -76,10 +79,17 @@ def calculate_flapping_metrics(histories: List[Dict], snapshot_time: datetime, l
     if  intensity > 2.0:
         score *= 0.5
 
-    period = "24h" if lookback_hours == 24 else "7d"
-    return {
-        f"flapping_events_{period}": count,
-        f"flapping_intensity_{period}": round(intensity, 3),
-        f"avg_flap_duration_{period}_min": round(avg_duration, 2),
-        f"stability_score_{period}": round(max(0.0, min(100.0, score)), 2)
-    }
+    if is_24h:
+        return {
+            "flapping_events_24h": count,
+            "flapping_intensity_24h": round(intensity, 3),
+            "avg_flap_duration_min": round(avg_duration, 2),       
+            "stability_score_24h": round(max(0.0, min(100.0, score)), 2)
+        }
+    else:
+        return {
+            "flapping_events_7d": count,
+            "flapping_intensity_7d": round(intensity, 3),
+            "avg_flap_duration_7d_min": round(avg_duration, 2),   
+            "stability_score_7d": round(max(0.0, min(100.0, score)), 2)
+        }
