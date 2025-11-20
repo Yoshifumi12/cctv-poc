@@ -69,7 +69,8 @@ async def compute_device_stats(histories: List[Any]) -> Dict[str, Any]:
     recent = sorted([h for h in histories if h.createdAt >= week_ago], key=lambda x: x.createdAt)
 
     downtime_24h = downtime_7d = events_24h = events_7d = 0.0
-    durations_24h = durations_7d = []
+    durations_24h = []
+    durations_7d = []
 
     offline_start = None
     for h in recent:
